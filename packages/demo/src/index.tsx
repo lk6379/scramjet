@@ -23,25 +23,60 @@ export function getTransport(): LibcurlClient | EpoxyClient {
 	}
 }
 
-async function waitForControllerOrReady(timeoutMs = 10000): Promise<void> {
-	if (navigator.serviceWorker.controller) return;
+async function waitForController(
+	registration: ServiceWorkerRegistration,
+	timeoutMs = 10000
+): Promise<ServiceWorker> {
+	if (navigator.serviceWorker.controller) {
+		return navigator.serviceWorker.controller;
+	}
 
-	const ready = navigator.serviceWorker.ready.then(() => {});
-	const controllerChanged = new Promise<void>((resolve) => {
-		const onChange = () => {
-			navigator.serviceWorker.removeEventListener("controllerchange", onChange);
-			resolve();
+	const readyRegistration = await Promise.race([
+		navigator.serviceWorker.ready,
+		new Promise<never>((_, reject) =>
+			setTimeout(
+				() => reject(new Error("Service worker activation timed out")),
+				timeoutMs
+			)
+		)
+	]);
+	const activeWorker = registration.active ?? readyRegistration.active;
+	if (!activeWorker) {
+		throw new Error("No active service worker available");
+	}
+
+	return new Promise<ServiceWorker>((resolve, reject) => {
+		let timeout: ReturnType<typeof setTimeout>;
+		const cleanup = () => {
+			clearTimeout(timeout);
+			navigator.serviceWorker.removeEventListener(
+				"controllerchange",
+				onControllerChange
+			);
 		};
-		navigator.serviceWorker.addEventListener("controllerchange", onChange, {
-			once: true,
-		} as any);
-	});
-	const timeout = new Promise<void>((resolve) =>
-		setTimeout(resolve, timeoutMs)
-	);
+		const finish = () => {
+			const controllingWorker = navigator.serviceWorker.controller;
+			if (!controllingWorker) return;
+			cleanup();
+			resolve(controllingWorker);
+		};
+		const onControllerChange = () => finish();
 
-	// Wait for whichever happens first; on timeout we continue to avoid blocking the UI.
-	await Promise.race([ready, controllerChanged, timeout]);
+		navigator.serviceWorker.addEventListener(
+			"controllerchange",
+			onControllerChange
+		);
+		timeout = setTimeout(() => {
+			cleanup();
+			reject(new Error("Service worker did not take control of this page"));
+		}, timeoutMs);
+
+		// An already-active worker does not automatically claim a page that was
+		// loaded before it. Ask it to claim this client, then wait for the actual
+		// controllerchange event before initializing Scramjet.
+		activeWorker.postMessage({ type: "scramjet:claim-clients" });
+		finish();
+	});
 }
 
 async function init() {
@@ -83,16 +118,13 @@ async function init() {
 
 		updateStatus(registration.installing ?? registration.waiting ?? null);
 
-		// Wait for control or readiness with a timeout; don't hang the UI on updates.
+		// The proxy routes only work after the current page is controlled. Merely
+		// having an active worker is not sufficient.
 		interstitial.$.state.status =
 			"Waiting for service worker to take control...";
-		await waitForControllerOrReady(10000);
+		const readySw = await waitForController(registration, 10000);
 		interstitial.$.state.status =
 			"Service worker ready, waiting for controller init";
-		const readySw = navigator.serviceWorker.controller ?? registration.active;
-		if (!readySw) {
-			throw new Error("No service worker available for controller");
-		}
 		controller = new Controller({
 			serviceworker: readySw,
 			transport: getTransport(),
