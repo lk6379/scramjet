@@ -11,6 +11,15 @@ let app = document.getElementById("app")!;
 
 let controller: InstanceType<typeof Controller>;
 const cachePlugin = new HttpCachePlugin();
+const scramjetConfig = {
+	...defaultConfigDev,
+	siteFlags: {
+		...defaultConfigDev.siteFlags,
+		"^https://appleid\\.apple\\.com/": {
+			syncxhr: true,
+		},
+	},
+};
 
 export function getTransport(): LibcurlClient | EpoxyClient {
 	const wispUrl = demoSettingsStore.wispUrl;
@@ -128,7 +137,7 @@ async function init() {
 		controller = new Controller({
 			serviceworker: readySw,
 			transport: getTransport(),
-			scramjetConfig: defaultConfigDev,
+			scramjetConfig,
 		});
 		await controller.wait();
 		console.log(controller);

@@ -5,7 +5,7 @@ services:
     restart: unless-stopped
     init: true
     ports:
-      - "${SCRAMJET_PORT:-4141}:4141"
+      - "${SCRAMJET_PORT:-80}:4141"
     environment:
       ALLOW_PRIVATE_NETWORKS: ${ALLOW_PRIVATE_NETWORKS:-false}
     read_only: true

@@ -1,28 +1,116 @@
-import { getFlag, ScramjetContext } from "@/shared";
-import { rewriteUrl, unrewriteUrl, URLMeta } from "@rewriters/url";
+/* eslint-disable scramjet-core/no-globals, scramjet-core/no-instanceof -- The sync bridge serializes trusted internal data and explicitly uses constructors from the proxied page realm. */
+import { ScramjetContext } from "@/shared";
+import { unrewriteUrl } from "@rewriters/url";
 import { ScramjetClient } from "@client/index";
 
+const SYNC_XHR_ENDPOINT = "/__scramjet_sync_xhr__";
+const MAX_SYNC_XHR_REDIRECTS = 10;
+
+type SyncXhrBridgeResponse = {
+	status: number;
+	statusText: string;
+	responseUrl: string;
+	headers: Array<[string, string]>;
+	body: string;
+	setCookies: string[];
+};
+
+function findHeader(headers: Record<string, string>, name: string) {
+	const target = name.toLowerCase();
+	for (const key of Object.keys(headers)) {
+		if (key.toLowerCase() === target) return headers[key];
+	}
+	return undefined;
+}
+
+function setHeaderIfMissing(
+	headers: Record<string, string>,
+	name: string,
+	value: string
+) {
+	if (findHeader(headers, name) === undefined) headers[name] = value;
+}
+
+function deleteHeader(headers: Record<string, string>, name: string) {
+	const target = name.toLowerCase();
+	for (const key of Object.keys(headers)) {
+		if (key.toLowerCase() === target) delete headers[key];
+	}
+}
+
+function bytesToBase64(client: ScramjetClient, bytes: Uint8Array) {
+	let binary = "";
+	const chunkSize = 0x8000;
+	for (let offset = 0; offset < bytes.length; offset += chunkSize) {
+		binary += String.fromCharCode(
+			...bytes.subarray(offset, offset + chunkSize)
+		);
+	}
+	return client.natives.call("btoa", null, binary);
+}
+
+function base64ToBytes(client: ScramjetClient, value: string) {
+	const binary = client.natives.call("atob", null, value);
+	const bytes = new Uint8Array(binary.length);
+	for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+	return bytes;
+}
+
+function encodeRequestBody(
+	client: ScramjetClient,
+	self: Self,
+	body: XMLHttpRequestBodyInit | Document | null
+) {
+	if (body === null || body === undefined) return null;
+
+	if (self.Document && body instanceof self.Document) {
+		body = new self.XMLSerializer().serializeToString(body);
+	} else if (self.URLSearchParams && body instanceof self.URLSearchParams) {
+		body = body.toString();
+	}
+
+	if (typeof body === "string") {
+		return bytesToBase64(client, new self.TextEncoder().encode(body));
+	}
+	if (body instanceof self.ArrayBuffer) {
+		return bytesToBase64(client, new Uint8Array(body));
+	}
+	if (self.ArrayBuffer.isView(body)) {
+		return bytesToBase64(
+			client,
+			new Uint8Array(body.buffer, body.byteOffset, body.byteLength)
+		);
+	}
+
+	throw new TypeError(
+		"Synchronous XMLHttpRequest only supports string and binary request bodies"
+	);
+}
+
 export default function (client: ScramjetClient, self: Self) {
-	let worker;
-	// if (self.Worker && flagEnabled("syncxhr", client.url)) {
-	// 	worker = client.natives.construct("Worker", config.files.sync);
-	// }
 	const ARGS = Symbol("xhr original args");
+	const ORIGINAL_URL = Symbol("xhr original url");
 	const HEADERS = Symbol("xhr headers");
 
 	client.Proxy("XMLHttpRequest.prototype.open", {
 		apply(ctx) {
-			if (ctx.args[1]) ctx.args[1] = client.rewriteUrl(ctx.args[1]);
+			if (ctx.args[1]) {
+				ctx.this[ORIGINAL_URL] = new self.URL(
+					String(ctx.args[1]),
+					client.url
+				).href;
+				ctx.args[1] = client.rewriteUrl(ctx.args[1]);
+			}
 			if (ctx.args[2] === undefined) ctx.args[2] = true;
 			ctx.this[ARGS] = ctx.args;
-		},
+		}
 	});
 
 	client.Proxy("XMLHttpRequest.prototype.setRequestHeader", {
 		apply(ctx) {
 			const headers = ctx.this[HEADERS] || (ctx.this[HEADERS] = {});
 			headers[ctx.args[0]] = ctx.args[1];
-		},
+		}
 	});
 
 	client.Proxy("XMLHttpRequest.prototype.send", {
@@ -30,100 +118,194 @@ export default function (client: ScramjetClient, self: Self) {
 			const args = ctx.this[ARGS];
 			if (!args || args[2]) return;
 
-			if (!client.getFlag("syncxhr")) {
+			if (!client.flagEnabled("syncxhr")) {
 				console.warn("ignoring request - sync xhr disabled in flags");
-
 				return ctx.return(undefined);
 			}
 
-			// it's a sync request
-			// sync xhr to service worker is not supported
-			// there's a nice way of polyfilling this though, we can spin on an atomic using sharedarraybuffer. this will maintain the sync behavior
-
-			//@ts-ignore
-			const sab = new SharedArrayBuffer(1024, { maxByteLength: 2147483647 });
-			const view = new DataView(sab);
-
-			client.natives.call("Worker.prototype.postMessage", worker, {
-				sab,
-				args,
-				headers: ctx.this[HEADERS],
-				body: ctx.args[0],
-			});
-
-			const now = performance.now();
-			while (view.getUint8(0) === 0) {
-				if (performance.now() - now > 1000) {
-					throw new Error("xhr timeout");
-				}
-				/* spin */
+			let requestUrl = ctx.this[ORIGINAL_URL] as string;
+			let method = String(args[0]).toUpperCase();
+			let encodedBody = encodeRequestBody(client, self, ctx.args[0]);
+			const requestHeaders: Record<string, string> = {
+				...(ctx.this[HEADERS] || {})
+			};
+			setHeaderIfMissing(requestHeaders, "Accept", "*/*");
+			setHeaderIfMissing(requestHeaders, "Referer", client.url.href);
+			setHeaderIfMissing(
+				requestHeaders,
+				"User-Agent",
+				self.navigator.userAgent
+			);
+			if (method !== "GET" && method !== "HEAD") {
+				setHeaderIfMissing(requestHeaders, "Origin", client.url.origin);
 			}
 
-			const status = view.getUint16(1);
-			const headersLength = view.getUint32(3);
+			const bridgeUrl = new self.URL(SYNC_XHR_ENDPOINT, client.context.prefix)
+				.href;
+			let result: SyncXhrBridgeResponse | undefined;
 
-			const headersab = new Uint8Array(headersLength);
-			headersab.set(new Uint8Array(sab.slice(7, 7 + headersLength)));
-			const headers = new TextDecoder().decode(headersab);
+			for (
+				let redirects = 0;
+				redirects <= MAX_SYNC_XHR_REDIRECTS;
+				redirects++
+			) {
+				const remoteUrl = new self.URL(requestUrl);
+				deleteHeader(requestHeaders, "Cookie");
+				const cookies = client.context.cookieJar.getCookies(remoteUrl, false);
+				if (cookies) requestHeaders.Cookie = cookies;
 
-			const bodyLength = view.getUint32(7 + headersLength);
-			const bodyab = new Uint8Array(bodyLength);
-			bodyab.set(
-				new Uint8Array(
-					sab.slice(11 + headersLength, 11 + headersLength + bodyLength)
-				)
-			);
-			const body = new TextDecoder().decode(bodyab);
+				const bridge = client.natives.construct("XMLHttpRequest");
+				client.natives.call(
+					"XMLHttpRequest.prototype.open",
+					bridge,
+					"POST",
+					bridgeUrl,
+					false
+				);
+				client.natives.call(
+					"XMLHttpRequest.prototype.setRequestHeader",
+					bridge,
+					"Content-Type",
+					"application/json"
+				);
+				client.natives.call(
+					"XMLHttpRequest.prototype.send",
+					bridge,
+					JSON.stringify({
+						url: requestUrl,
+						method,
+						headers: requestHeaders,
+						body: encodedBody
+					})
+				);
 
-			// these should be using proxies to not leak scram strings but who cares
+				if (bridge.status !== 200) {
+					throw new Error(
+						bridge.responseText ||
+							`Synchronous XMLHttpRequest bridge failed (${bridge.status})`
+					);
+				}
+				result = JSON.parse(bridge.responseText) as SyncXhrBridgeResponse;
+
+				if (result.setCookies.length) {
+					const cookieUrl = new self.URL(result.responseUrl || requestUrl);
+					const entries = result.setCookies.map((cookie) => ({
+						url: cookieUrl,
+						cookie
+					}));
+					for (const entry of entries) {
+						client.context.cookieJar.setCookies(entry.cookie, entry.url);
+					}
+					void client.init.sendSetCookie(entries);
+				}
+
+				const location = result.headers.find(
+					([name]) => name.toLowerCase() === "location"
+				)?.[1];
+				if (location && [301, 302, 303, 307, 308].includes(result.status)) {
+					if (redirects === MAX_SYNC_XHR_REDIRECTS) {
+						throw new Error("Too many synchronous XMLHttpRequest redirects");
+					}
+					const previousOrigin = remoteUrl.origin;
+					requestUrl = new self.URL(location, remoteUrl).href;
+					if (new self.URL(requestUrl).origin !== previousOrigin) {
+						deleteHeader(requestHeaders, "Authorization");
+					}
+					if (
+						result.status === 303 ||
+						((result.status === 301 || result.status === 302) &&
+							method === "POST")
+					) {
+						method = "GET";
+						encodedBody = null;
+						deleteHeader(requestHeaders, "Content-Type");
+						deleteHeader(requestHeaders, "Content-Length");
+					}
+					continue;
+				}
+
+				break;
+			}
+
+			if (!result)
+				throw new Error("Synchronous XMLHttpRequest returned no data");
+
+			const bodyBytes = base64ToBytes(client, result.body);
+			const responseText = new self.TextDecoder().decode(bodyBytes);
+			const headers = result.headers
+				.map(([name, value]) => `${name}: ${value}`)
+				.join("\r\n");
+
+			client.RawTrap(ctx.this, "readyState", {
+				get() {
+					return 4;
+				}
+			});
 			client.RawTrap(ctx.this, "status", {
 				get() {
-					return status;
-				},
+					return result!.status;
+				}
+			});
+			client.RawTrap(ctx.this, "statusText", {
+				get() {
+					return result!.statusText;
+				}
+			});
+			client.RawTrap(ctx.this, "responseURL", {
+				get() {
+					return result!.responseUrl;
+				}
 			});
 			client.RawTrap(ctx.this, "responseText", {
 				get() {
-					return body;
-				},
+					return responseText;
+				}
 			});
 			client.RawTrap(ctx.this, "response", {
 				get() {
-					if (ctx.this.responseType === "arraybuffer") return bodyab.buffer;
-
-					return body;
-				},
+					if (ctx.this.responseType === "arraybuffer") {
+						return bodyBytes.buffer;
+					}
+					if (ctx.this.responseType === "json") {
+						return responseText ? JSON.parse(responseText) : null;
+					}
+					if (ctx.this.responseType === "blob") {
+						return new self.Blob([bodyBytes]);
+					}
+					return responseText;
+				}
 			});
 			client.RawTrap(ctx.this, "responseXML", {
 				get() {
-					const parser = new DOMParser();
-
-					return parser.parseFromString(body, "text/xml");
-				},
+					return new self.DOMParser().parseFromString(responseText, "text/xml");
+				}
 			});
 			client.RawTrap(ctx.this, "getAllResponseHeaders", {
 				get() {
 					return () => headers;
-				},
+				}
 			});
 			client.RawTrap(ctx.this, "getResponseHeader", {
 				get() {
 					return (header: string) => {
-						const re = new RegExp(`^${header}: (.*)$`, "m");
-						const match = re.exec(headers);
-
-						return match ? match[1] : null;
+						const target = header.toLowerCase();
+						return (
+							result!.headers.find(
+								([name]) => name.toLowerCase() === target
+							)?.[1] ?? null
+						);
 					};
-				},
+				}
 			});
 
 			ctx.return(undefined);
-		},
+		}
 	});
 
 	client.Trap("XMLHttpRequest.prototype.responseURL", {
 		get(ctx) {
 			return client.unrewriteUrl(ctx.get() as string);
-		},
+		}
 	});
 
 	client.Proxy("XMLHttpRequest.prototype.getAllResponseHeaders", {
@@ -142,7 +324,7 @@ export default function (client: ScramjetClient, self: Self) {
 			}
 
 			ctx.return(headers.join("\r\n"));
-		},
+		}
 	});
 	client.Proxy("XMLHttpRequest.prototype.getResponseHeader", {
 		apply(ctx) {
@@ -151,7 +333,7 @@ export default function (client: ScramjetClient, self: Self) {
 			if (ctx.args[0].toLowerCase() === "link") {
 				ctx.return(unrewriteLinkHeader(header, client.context));
 			}
-		},
+		}
 	});
 }
 

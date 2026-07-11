@@ -1,6 +1,8 @@
 import { createReadStream } from "node:fs";
+import { lookup } from "node:dns/promises";
 import { stat } from "node:fs/promises";
 import { createServer } from "node:http";
+import { isIP } from "node:net";
 import { extname, join, normalize, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { server as wisp } from "@mercuryworkshop/wisp-js/server";
@@ -16,6 +18,9 @@ if (!Number.isInteger(port) || port < 1 || port > 65535) {
 }
 
 const allowPrivateNetworks = process.env.ALLOW_PRIVATE_NETWORKS === "true";
+const syncXhrEndpoint = "/__scramjet_sync_xhr__";
+const maxSyncXhrPayload = 20 * 1024 * 1024;
+const maxSyncXhrResponse = 16 * 1024 * 1024;
 wisp.options.allow_private_ips = allowPrivateNetworks;
 wisp.options.allow_loopback_ips = allowPrivateNetworks;
 
@@ -30,15 +35,171 @@ const contentTypes = new Map([
 	[".png", "image/png"],
 	[".svg", "image/svg+xml"],
 	[".wasm", "application/wasm"],
-	[".webmanifest", "application/manifest+json"],
+	[".webmanifest", "application/manifest+json"]
 ]);
 
 function sendText(res, statusCode, body) {
 	res.writeHead(statusCode, {
 		"Content-Type": "text/plain; charset=utf-8",
-		"Content-Length": Buffer.byteLength(body),
+		"Content-Length": Buffer.byteLength(body)
 	});
 	res.end(body);
+}
+
+function sendJson(res, statusCode, value) {
+	const body = JSON.stringify(value);
+	res.writeHead(statusCode, {
+		"Content-Type": "application/json; charset=utf-8",
+		"Content-Length": Buffer.byteLength(body),
+		"Cache-Control": "no-store",
+		"X-Content-Type-Options": "nosniff"
+	});
+	res.end(body);
+}
+
+function isPrivateIpAddress(address) {
+	const normalized = address.toLowerCase().split("%")[0];
+	if (normalized.startsWith("::ffff:")) {
+		return isPrivateIpAddress(normalized.slice(7));
+	}
+
+	if (isIP(normalized) === 4) {
+		const [a, b] = normalized.split(".").map(Number);
+		return (
+			a === 0 ||
+			a === 10 ||
+			a === 127 ||
+			(a === 100 && b >= 64 && b <= 127) ||
+			(a === 169 && b === 254) ||
+			(a === 172 && b >= 16 && b <= 31) ||
+			(a === 192 && b === 168) ||
+			(a === 198 && (b === 18 || b === 19)) ||
+			a >= 224
+		);
+	}
+
+	if (isIP(normalized) === 6) {
+		return (
+			normalized === "::" ||
+			normalized === "::1" ||
+			normalized.startsWith("fc") ||
+			normalized.startsWith("fd") ||
+			/^fe[89ab]/.test(normalized) ||
+			normalized.startsWith("ff")
+		);
+	}
+
+	return true;
+}
+
+async function assertAllowedTarget(url) {
+	if (url.protocol !== "http:" && url.protocol !== "https:") {
+		throw new TypeError("Only HTTP and HTTPS targets are supported");
+	}
+	if (allowPrivateNetworks) return;
+
+	const addresses = isIP(url.hostname)
+		? [{ address: url.hostname }]
+		: await lookup(url.hostname, { all: true, verbatim: true });
+	if (
+		!addresses.length ||
+		addresses.some(({ address }) => isPrivateIpAddress(address))
+	) {
+		throw new TypeError("Private network targets are disabled");
+	}
+}
+
+async function readJsonBody(req) {
+	const chunks = [];
+	let length = 0;
+	for await (const chunk of req) {
+		length += chunk.length;
+		if (length > maxSyncXhrPayload) {
+			throw new RangeError("Synchronous XMLHttpRequest payload is too large");
+		}
+		chunks.push(chunk);
+	}
+	return JSON.parse(Buffer.concat(chunks).toString("utf8"));
+}
+
+async function handleSyncXhr(req, res) {
+	if (req.method !== "POST") {
+		res.writeHead(405, { Allow: "POST" });
+		res.end();
+		return;
+	}
+
+	try {
+		const payload = await readJsonBody(req);
+		const target = new URL(payload.url);
+		await assertAllowedTarget(target);
+
+		const method = String(payload.method || "GET").toUpperCase();
+		const headers = new Headers();
+		for (const [name, value] of Object.entries(payload.headers || {})) {
+			if (typeof value !== "string") continue;
+			if (
+				[
+					"connection",
+					"content-length",
+					"host",
+					"transfer-encoding",
+					"upgrade"
+				].includes(name.toLowerCase())
+			) {
+				continue;
+			}
+			headers.set(name, value);
+		}
+
+		const body = payload.body ? Buffer.from(payload.body, "base64") : undefined;
+		const response = await fetch(target, {
+			method,
+			headers,
+			body: method === "GET" || method === "HEAD" ? undefined : body,
+			redirect: "manual",
+			signal: AbortSignal.timeout(30_000)
+		});
+		const responseBuffer = Buffer.from(await response.arrayBuffer());
+		if (responseBuffer.length > maxSyncXhrResponse) {
+			throw new RangeError("Synchronous XMLHttpRequest response is too large");
+		}
+
+		const responseHeaders = [];
+		for (const [name, value] of response.headers) {
+			if (
+				[
+					"content-encoding",
+					"content-length",
+					"set-cookie",
+					"transfer-encoding"
+				].includes(name.toLowerCase())
+			) {
+				continue;
+			}
+			responseHeaders.push([name, value]);
+		}
+		const setCookies =
+			typeof response.headers.getSetCookie === "function"
+				? response.headers.getSetCookie()
+				: [];
+
+		sendJson(res, 200, {
+			status: response.status,
+			statusText: response.statusText,
+			responseUrl: response.url || target.href,
+			headers: responseHeaders,
+			body: responseBuffer.toString("base64"),
+			setCookies
+		});
+	} catch (error) {
+		const statusCode =
+			error instanceof TypeError || error instanceof RangeError ? 400 : 502;
+		sendJson(res, statusCode, {
+			error:
+				error instanceof Error ? error.message : "Synchronous request failed"
+		});
+	}
 }
 
 async function serveStatic(req, res) {
@@ -89,7 +250,7 @@ async function serveStatic(req, res) {
 		"Cache-Control": immutable
 			? "public, max-age=31536000, immutable"
 			: "no-cache",
-		"X-Content-Type-Options": "nosniff",
+		"X-Content-Type-Options": "nosniff"
 	});
 	if (req.method === "HEAD") {
 		res.end();
@@ -99,6 +260,15 @@ async function serveStatic(req, res) {
 }
 
 const httpServer = createServer((req, res) => {
+	if (req.url === syncXhrEndpoint) {
+		handleSyncXhr(req, res).catch((error) => {
+			console.error(error);
+			if (!res.headersSent) sendText(res, 500, "Internal server error\n");
+			else res.destroy();
+		});
+		return;
+	}
+
 	serveStatic(req, res).catch((error) => {
 		console.error(error);
 		if (!res.headersSent) sendText(res, 500, "Internal server error\n");
