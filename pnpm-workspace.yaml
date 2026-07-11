@@ -7,10 +7,11 @@ packages:
   - packages/demo
   - packages/bootstrap
   - packages/create-proxy-app
+  - packages/docker-runtime
 
 overrides:
   htmlparser2: 12.0.0
-  
+
 catalog:
   "@mercuryworkshop/wisp-js": 0.4.1
   "@mercuryworkshop/proxy-transports": 1.0.2

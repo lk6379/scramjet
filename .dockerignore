@@ -1,0 +1,13 @@
+.git
+.github
+.vscode
+.zed
+node_modules
+**/node_modules
+dist
+**/dist
+**/target
+**/coverage
+*.log
+.env*
+README.md

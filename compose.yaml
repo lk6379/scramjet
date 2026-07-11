@@ -1,0 +1,17 @@
+services:
+  scramjet:
+    image: ${SCRAMJET_IMAGE:-ghcr.io/lk6379/scramjet:latest}
+    pull_policy: always
+    restart: unless-stopped
+    init: true
+    ports:
+      - "${SCRAMJET_PORT:-4141}:4141"
+    environment:
+      ALLOW_PRIVATE_NETWORKS: ${ALLOW_PRIVATE_NETWORKS:-false}
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL

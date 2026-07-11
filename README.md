@@ -56,3 +56,37 @@ pnpm dev
 ```
 
 The demo page for scramjet should now be running at <http://localhost:4141> and should rebuild upon a file being changed (excluding the rewriter).
+
+## Docker deployment
+
+Commits pushed to `main` are built by GitHub Actions and published to GitHub
+Container Registry as `ghcr.io/lk6379/scramjet:latest`. Version tags such as
+`v2.0.0` also produce `2.0.0` and `2.0` image tags.
+
+Copy `compose.yaml` to the server and run:
+
+```sh
+docker compose up -d
+```
+
+The application is then available on port `4141`. To use another host port:
+
+```sh
+SCRAMJET_PORT=80 docker compose up -d
+```
+
+Set `SCRAMJET_IMAGE` when deploying a fork or a versioned image:
+
+```sh
+SCRAMJET_IMAGE=ghcr.io/owner/repository:2.0.0 docker compose up -d
+```
+
+The image serves the frontend and its Wisp WebSocket endpoint on the same port,
+at `/wisp/`. Put it behind a TLS reverse proxy for public deployments so the
+browser uses HTTPS and WSS. Private and loopback destinations are blocked by
+default; set `ALLOW_PRIVATE_NETWORKS=true` only on a trusted, access-controlled
+deployment. An unauthenticated public proxy can be abused, so access control and
+rate limiting are strongly recommended.
+
+If the GHCR package is private, authenticate once on the server with
+`docker login ghcr.io`, or change the package visibility to public in GitHub.
