@@ -56,6 +56,26 @@ function base64ToBytes(client: ScramjetClient, value: string) {
 	return bytes;
 }
 
+function dispatchCompletionEvent(
+	client: ScramjetClient,
+	self: Self,
+	xhr: XMLHttpRequest,
+	type: "readystatechange" | "load" | "loadend",
+	transferred: number
+) {
+	const event =
+		type === "readystatechange"
+			? client.natives.construct("Event", type)
+			: self.ProgressEvent
+				? client.natives.construct("ProgressEvent", type, {
+						lengthComputable: true,
+						loaded: transferred,
+						total: transferred
+					})
+				: client.natives.construct("Event", type);
+	client.natives.call("EventTarget.prototype.dispatchEvent", xhr, event);
+}
+
 function encodeRequestBody(
 	client: ScramjetClient,
 	self: Self,
@@ -297,6 +317,16 @@ export default function (client: ScramjetClient, self: Self) {
 					};
 				}
 			});
+
+			for (const type of ["readystatechange", "load", "loadend"] as const) {
+				dispatchCompletionEvent(
+					client,
+					self,
+					ctx.this,
+					type,
+					bodyBytes.byteLength
+				);
+			}
 
 			ctx.return(undefined);
 		}
