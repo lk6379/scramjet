@@ -48,6 +48,8 @@ const URL_HEADERS = new _Set([
 	"referer",
 ]) as _Set<string>;
 
+const ORIGINAL_URL_HEADER_PREFIX = "x-scramjet-original-url-";
+
 function rewriteLinkHeader(
 	link: string,
 	context: ScramjetContext,
@@ -73,6 +75,10 @@ export async function rewriteResponseHeaders(
 	for (const urlHeader of URL_HEADERS) {
 		if (headers.has(urlHeader)) {
 			const url = headers.get(urlHeader)!;
+			headers.set(
+				ORIGINAL_URL_HEADER_PREFIX + urlHeader,
+				encodeURIComponent(url)
+			);
 			const rewrittenUrl = rewriteUrl(url, handler.context, parsed.meta);
 			headers.set(urlHeader, rewrittenUrl);
 		}

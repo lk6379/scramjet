@@ -5,6 +5,7 @@ import { ScramjetClient } from "@client/index";
 
 const SYNC_XHR_ENDPOINT = "/__scramjet_sync_xhr__";
 const MAX_SYNC_XHR_REDIRECTS = 10;
+const ORIGINAL_URL_HEADER_PREFIX = "x-scramjet-original-url-";
 
 type SyncXhrBridgeResponse = {
 	status: number;
@@ -343,32 +344,76 @@ export default function (client: ScramjetClient, self: Self) {
 			const headerstring = ctx.fn.call(ctx.this) as string;
 			if (!headerstring) return headerstring;
 			const headers = headerstring.split("\r\n");
+			const originals: Record<string, string> = {};
 
-			for (const [i, header] of headers.entries()) {
+			for (const header of headers) {
 				const separator = header.indexOf(":");
 				if (separator === -1) continue;
 
-				const name = header.slice(0, separator);
-				const value = header.slice(separator + 1).trim();
-				headers[i] = `${name}: ${unrewriteResponseHeader(
-					name,
-					value,
-					client.context
-				)}`;
+				const name = header.slice(0, separator).toLowerCase();
+				if (isOriginalUrlHeader(name)) {
+					originals[name.slice(ORIGINAL_URL_HEADER_PREFIX.length)] =
+						decodeOriginalUrlHeader(header.slice(separator + 1).trim());
+				}
 			}
 
-			ctx.return(headers.join("\r\n"));
+			const visibleHeaders: string[] = [];
+			for (const header of headers) {
+				const separator = header.indexOf(":");
+				if (separator === -1) {
+					visibleHeaders.push(header);
+					continue;
+				}
+
+				const name = header.slice(0, separator);
+				const lowerName = name.toLowerCase();
+				if (isOriginalUrlHeader(lowerName)) continue;
+				const value = header.slice(separator + 1).trim();
+				visibleHeaders.push(
+					`${name}: ${
+						originals[lowerName] ??
+						unrewriteResponseHeader(name, value, client.context)
+					}`
+				);
+			}
+
+			ctx.return(visibleHeaders.join("\r\n"));
 		}
 	});
 	client.Proxy("XMLHttpRequest.prototype.getResponseHeader", {
 		apply(ctx) {
-			const header = ctx.fn.call(ctx.this, ctx.args[0]) as string | null;
+			const name = String(ctx.args[0]);
+			if (isOriginalUrlHeader(name)) return ctx.return(null);
+
+			const original = ctx.fn.call(
+				ctx.this,
+				originalUrlHeaderName(name)
+			) as string | null;
+			if (original !== null) {
+				return ctx.return(decodeOriginalUrlHeader(original));
+			}
+
+			const header = ctx.fn.call(ctx.this, name) as string | null;
 			if (!header) return header;
-			ctx.return(
-				unrewriteResponseHeader(ctx.args[0], header, client.context)
-			);
+			ctx.return(unrewriteResponseHeader(name, header, client.context));
 		}
 	});
+}
+
+export function originalUrlHeaderName(name: string) {
+	return ORIGINAL_URL_HEADER_PREFIX + name.toLowerCase();
+}
+
+export function isOriginalUrlHeader(name: string) {
+	return name.toLowerCase().startsWith(ORIGINAL_URL_HEADER_PREFIX);
+}
+
+export function decodeOriginalUrlHeader(header: string) {
+	try {
+		return decodeURIComponent(header);
+	} catch {
+		return header;
+	}
 }
 
 export function unrewriteResponseHeader(

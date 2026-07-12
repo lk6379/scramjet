@@ -1,6 +1,11 @@
 import { ScramjetClient } from "@client/index";
-import { unrewriteResponseHeader } from "./xmlhttprequest";
-import { String } from "@/shared/snapshot";
+import {
+	decodeOriginalUrlHeader,
+	isOriginalUrlHeader,
+	originalUrlHeaderName,
+	unrewriteResponseHeader,
+} from "./xmlhttprequest";
+import { _Headers, String } from "@/shared/snapshot";
 
 /**
  * Capture the page's intended `init.mode` / `init.credentials` and forward
@@ -51,12 +56,17 @@ export default function (client: ScramjetClient) {
 	client.Trap("Response.prototype.headers", {
 		get(ctx) {
 			const headers = ctx.get() as Headers;
-			const newHeaders = new Headers();
+			const newHeaders = new _Headers();
 
 			for (const [key, value] of headers.entries()) {
+				if (isOriginalUrlHeader(key)) continue;
+
+				const original = headers.get(originalUrlHeaderName(key));
 				newHeaders.append(
 					key,
-					unrewriteResponseHeader(key, value, client.context)
+					original === null
+						? unrewriteResponseHeader(key, value, client.context)
+						: decodeOriginalUrlHeader(original)
 				);
 			}
 
