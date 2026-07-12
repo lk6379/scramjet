@@ -345,12 +345,16 @@ export default function (client: ScramjetClient, self: Self) {
 			const headers = headerstring.split("\r\n");
 
 			for (const [i, header] of headers.entries()) {
-				if (header.toLowerCase().startsWith("link:")) {
-					headers[i] = `Link: ${unrewriteLinkHeader(
-						header.slice(5).trim(),
-						client.context
-					)}`;
-				}
+				const separator = header.indexOf(":");
+				if (separator === -1) continue;
+
+				const name = header.slice(0, separator);
+				const value = header.slice(separator + 1).trim();
+				headers[i] = `${name}: ${unrewriteResponseHeader(
+					name,
+					value,
+					client.context
+				)}`;
 			}
 
 			ctx.return(headers.join("\r\n"));
@@ -360,11 +364,30 @@ export default function (client: ScramjetClient, self: Self) {
 		apply(ctx) {
 			const header = ctx.fn.call(ctx.this, ctx.args[0]) as string | null;
 			if (!header) return header;
-			if (ctx.args[0].toLowerCase() === "link") {
-				ctx.return(unrewriteLinkHeader(header, client.context));
-			}
+			ctx.return(
+				unrewriteResponseHeader(ctx.args[0], header, client.context)
+			);
 		}
 	});
+}
+
+export function unrewriteResponseHeader(
+	name: string,
+	header: string,
+	context: ScramjetContext
+) {
+	switch (name.toLowerCase()) {
+		case "link":
+			return unrewriteLinkHeader(header, context);
+		case "location":
+		case "content-location":
+		case "referer":
+			return header.startsWith(context.prefix.href)
+				? unrewriteUrl(header, context)
+				: header;
+		default:
+			return header;
+	}
 }
 
 export function unrewriteLinkHeader(header: string, context: ScramjetContext) {

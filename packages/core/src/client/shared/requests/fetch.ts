@@ -1,5 +1,5 @@
 import { ScramjetClient } from "@client/index";
-import { unrewriteLinkHeader } from "./xmlhttprequest";
+import { unrewriteResponseHeader } from "./xmlhttprequest";
 import { String } from "@/shared/snapshot";
 
 /**
@@ -54,11 +54,10 @@ export default function (client: ScramjetClient) {
 			const newHeaders = new Headers();
 
 			for (const [key, value] of headers.entries()) {
-				if (key.toLowerCase() === "link") {
-					newHeaders.append(key, unrewriteLinkHeader(value, client.context));
-				} else {
-					newHeaders.append(key, value);
-				}
+				newHeaders.append(
+					key,
+					unrewriteResponseHeader(key, value, client.context)
+				);
 			}
 
 			return newHeaders;
