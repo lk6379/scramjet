@@ -1,6 +1,39 @@
 import { isHtmlMimeType, ScramjetHeaders } from "@/shared";
 import { BareResponse } from "@mercuryworkshop/proxy-transports";
 import { ScramjetFetchParsed } from ".";
+import { _Set, _URL } from "@/shared/snapshot";
+
+const REFERRER_POLICIES = new _Set([
+	"no-referrer",
+	"no-referrer-when-downgrade",
+	"same-origin",
+	"origin",
+	"strict-origin",
+	"origin-when-cross-origin",
+	"strict-origin-when-cross-origin",
+	"unsafe-url",
+]);
+
+/**
+ * Parse a Referrer-Policy header value according to the header's fallback-list
+ * semantics. Servers can send multiple comma-separated policies so older
+ * browsers use the first value they understand while current browsers use the
+ * last recognized value. GitHub currently sends
+ * `origin-when-cross-origin, strict-origin-when-cross-origin`.
+ */
+export function normalizeReferrerPolicy(
+	policy: string | null | undefined
+): string | undefined {
+	if (!policy) return undefined;
+
+	let normalized: string | undefined;
+	for (const candidate of policy.split(",")) {
+		const token = candidate.trim().toLowerCase();
+		if (REFERRER_POLICIES.has(token)) normalized = token;
+	}
+
+	return normalized;
+}
 
 export function normalizeContentType(
 	parsed: ScramjetFetchParsed,
@@ -28,7 +61,7 @@ export function createReferrerString(
 	resource: URL,
 	policy: string | null
 ): string {
-	policy ||= "strict-origin-when-cross-origin";
+	policy = normalizeReferrerPolicy(policy) ?? "strict-origin-when-cross-origin";
 	const originIsHttps = clientUrl.protocol === "https:";
 	const destIsHttps = resource.protocol === "https:";
 
@@ -40,7 +73,7 @@ export function createReferrerString(
 
 	const referrerOrigin = clientUrl.origin;
 
-	const referrerUrl = new URL(clientUrl.href);
+	const referrerUrl = new _URL(clientUrl.href);
 	referrerUrl.hash = "";
 	const referrerUrlString = referrerUrl.href;
 

@@ -29,6 +29,7 @@ import {
 	type CookieSyncOptions,
 	TrackedHistoryState,
 } from "@/fetch";
+import { normalizeReferrerPolicy } from "@/fetch/util";
 import { AnyFunction } from "@/types";
 import {
 	_URL,
@@ -471,7 +472,9 @@ export class ScramjetClient {
 			},
 			get referrerPolicy(): string | undefined {
 				if (client.initHeaders && client.initHeaders.has("referrer-policy")) {
-					return client.initHeaders.get("referrer-policy");
+					return normalizeReferrerPolicy(
+						client.initHeaders.get("referrer-policy")
+					);
 				}
 				if (!iswindow) return "";
 
@@ -495,7 +498,7 @@ export class ScramjetClient {
 				];
 				const last = meta[meta.length - 1];
 				if (last) {
-					return last.getAttribute("content");
+					return normalizeReferrerPolicy(last.getAttribute("content"));
 				}
 
 				return "";
