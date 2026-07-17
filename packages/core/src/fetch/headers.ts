@@ -137,40 +137,62 @@ export function rewriteRequestHeaders(
 			? parsed.referrerSourceUrl
 			: request.rawClientUrl ||
 				(request.rawReferrer ? new _URL(request.rawReferrer) : undefined);
-	const originUrl =
+	const referrerUrl =
 		rawOriginUrl &&
 		rawOriginUrl.pathname.startsWith(handler.context.prefix.pathname)
 			? new _URL(unrewriteUrl(rawOriginUrl, handler.context))
-			: rawOriginUrl;
+			: undefined;
+	let originUrl = referrerUrl ?? rawOriginUrl ?? undefined;
+	let usingInitiatorOriginFallback = false;
 
+	// Fetch/Request URLs are stamped with the logical initiator origin ($io).
+	// Most requests also have a SW client URL/referrer, but some browser-created
+	// request paths (notably polling from custom elements) can arrive without a
+	// usable full referrer. Fall back to $io so credentials="same-origin" still
+	// has the same origin relationship the page intended.
 	if (
-		rawOriginUrl &&
-		rawOriginUrl.pathname.startsWith(handler.context.prefix.pathname)
+		(!originUrl || !isHttpLikeOrigin(originUrl)) &&
+		parsed.fetchInitiatorOrigin
 	) {
+		try {
+			originUrl = new _URL(parsed.fetchInitiatorOrigin);
+			usingInitiatorOriginFallback = true;
+		} catch {
+			originUrl = undefined;
+		}
+	}
+
+	if (referrerUrl || usingInitiatorOriginFallback) {
 		headers.set("Origin", originUrl.origin);
 
 		const referer = createReferrerString(
-			originUrl,
+			referrerUrl ?? originUrl,
 			parsed.url,
 			parsed.referrerPolicy ?? null
 		);
 		if (referer) headers.set("Referer", referer);
 	}
 
-	const sameSiteContext = computeSameSiteContext(request, parsed, originUrl);
-	const cookies = handler.context.cookieJar.getCookies(
-		parsed.url,
-		false,
-		sameSiteContext
-	);
+	if (requestSendsCookies(request, parsed, originUrl)) {
+		const sameSiteContext = computeSameSiteContext(request, parsed, originUrl);
+		const cookies = handler.context.cookieJar.getCookies(
+			parsed.url,
+			false,
+			sameSiteContext
+		);
 
-	if (cookies.length) {
-		headers.set("Cookie", cookies);
+		if (cookies.length) {
+			headers.set("Cookie", cookies);
+		}
 	}
 
 	applyFetchMetadataHeaders(headers, request, parsed, handler);
 
 	return headers;
+}
+
+function isHttpLikeOrigin(url: URL): boolean {
+	return url.protocol === "http:" || url.protocol === "https:";
 }
 
 /**
@@ -272,6 +294,31 @@ function applyFetchMetadataHeaders(
 	}
 }
 
+function isSameOriginRequest(originUrl: URL | undefined, destUrl: URL): boolean {
+	return !!originUrl && computeFetchSite(originUrl, destUrl) === "same-origin";
+}
+
+function requestSendsCookies(
+	request: ScramjetFetchRequest,
+	parsed: ScramjetFetchParsed,
+	originUrl: URL | undefined
+): boolean {
+	if (parsed.fetchCredentials === "omit") return false;
+	if (parsed.fetchCredentials === "include") return true;
+	if (parsed.fetchCredentials === "same-origin") {
+		return isSameOriginRequest(originUrl, parsed.url);
+	}
+
+	const dest = parsed.destination;
+	if (dest === "" || dest === "report") {
+		return isSameOriginRequest(originUrl, parsed.url);
+	}
+	if (parsed.isModule) {
+		return isSameOriginRequest(originUrl, parsed.url);
+	}
+	return requestIncludesCredentials(request, parsed);
+}
+
 /**
  * Whether this request will carry credentials to the destination. Used by
  * Sec-Fetch-Storage-Access. The browser's `event.request.credentials` value
@@ -291,7 +338,13 @@ function requestIncludesCredentials(
 	request: ScramjetFetchRequest,
 	parsed: ScramjetFetchParsed
 ): boolean {
-	if (parsed.fetchCredentialsInclude) return true;
+	if (parsed.fetchCredentials === "include") return true;
+	if (
+		parsed.fetchCredentials === "omit" ||
+		parsed.fetchCredentials === "same-origin"
+	) {
+		return false;
+	}
 	const dest = parsed.destination;
 	// fetch(): destination is "" (empty). XHR / report: destination is
 	// "report". Both default to credentials="same-origin", so cross-site

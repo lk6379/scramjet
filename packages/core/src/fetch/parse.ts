@@ -110,6 +110,11 @@ export function parseRequest(
 	)
 		? params.mode
 		: undefined;
+	const fetchCredentials = ["include", "same-origin", "omit"].includes(
+		params.credentials
+	)
+		? (params.credentials as RequestCredentials)
+		: undefined;
 	const destination =
 		(params.destination as RequestDestination | undefined) ||
 		request.rawDestination;
@@ -133,8 +138,7 @@ export function parseRequest(
 		crossSiteRedirect: params.crossSiteRedirect === "1",
 		fetchSiteState,
 		fetchInitiatorOrigin: params.initiatorOrigin || undefined,
-		// TODO: should really just be a boolean
-		fetchCredentialsInclude: params.credentials === "include",
+		fetchCredentials,
 		fetchMode,
 		destination,
 		isIframe: params.isIframe === "1",

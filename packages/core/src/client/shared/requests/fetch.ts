@@ -16,10 +16,19 @@ import { _Headers, String } from "@/shared/snapshot";
  * same-origin URL and don't reflect the page's actual intent.
  */
 function rewriteUrlOptionsForFetch(init: RequestInit | undefined) {
+	const credentials = init?.credentials;
 	return {
 		// `fetch()` and `new Request()` both default mode to "cors" per spec.
 		mode: init?.mode ?? "cors",
-		credentials: init?.credentials === "include" ? "include" : undefined,
+		// The default credentials mode for fetch()/Request is "same-origin".
+		// Stamp it explicitly because the service worker only sees the rewritten
+		// proxy URL, where same-origin/cross-origin relationships are distorted.
+		credentials:
+			credentials === "include" ||
+			credentials === "same-origin" ||
+			credentials === "omit"
+				? credentials
+				: "same-origin",
 	};
 }
 

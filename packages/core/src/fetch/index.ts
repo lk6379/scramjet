@@ -46,8 +46,8 @@ export interface ScramjetFetchParsed {
 	// specifically for tracking Sec-Fetch-Site, don't use for anything else, it will diverge from clientUrl in some cases
 	fetchInitiatorOrigin?: string;
 
-	// was the request made with credentials=include?
-	fetchCredentialsInclude?: boolean;
+	// credentials mode propagated from fetch() / new Request().
+	fetchCredentials?: RequestCredentials;
 
 	// tracks RequestInit.mode if set
 	fetchMode?: ScramjetRequestMode;
