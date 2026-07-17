@@ -1,0 +1,20 @@
+services:
+  scramjet:
+    image: scramjet:local
+    build:
+      context: .
+      dockerfile: Dockerfile
+    pull_policy: never
+    restart: unless-stopped
+    init: true
+    ports:
+      - "${SCRAMJET_PORT:-80}:4141"
+    environment:
+      ALLOW_PRIVATE_NETWORKS: ${ALLOW_PRIVATE_NETWORKS:-false}
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
