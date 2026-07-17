@@ -163,11 +163,45 @@ export function shouldRoute(event: FetchEvent): boolean {
 	return tab !== undefined;
 }
 
+async function readRequestBodyForRpc(
+	request: Request
+): Promise<{ body: BodyInit | null; transfer?: Transferable[] }> {
+	if (!request.body) return { body: null };
+
+	let isGithubMobilePoll = false;
+	try {
+		isGithubMobilePoll = decodeURIComponent(
+			new URL(request.url).pathname
+		).includes("https://github.com/sessions/two-factor/mobile_poll");
+	} catch {
+		// Keep the normal streaming path if the rewritten URL is malformed.
+	}
+
+	const shouldBuffer =
+		isGithubMobilePoll &&
+		request.destination === "" &&
+		request.method !== "GET" &&
+		request.method !== "HEAD";
+	if (!shouldBuffer) {
+		return {
+			body: request.body,
+			transfer: [request.body],
+		};
+	}
+
+	const body = await request.clone().arrayBuffer();
+	return {
+		body,
+		transfer: [body],
+	};
+}
+
 export async function route(event: FetchEvent): Promise<Response> {
 	try {
 		const url = new URL(event.request.url);
 		const tab = tabs.find((tab) => url.pathname.startsWith(tab.prefix))!;
 		const client = await clients.get(event.clientId);
+		const requestBody = await readRequestBodyForRpc(event.request);
 
 		const rawheaders: RawHeaders = [...event.request.headers];
 
@@ -180,18 +214,14 @@ export async function route(event: FetchEvent): Promise<Response> {
 				mode: event.request.mode,
 				referrer: event.request.referrer,
 				method: event.request.method,
-				body: event.request.body,
+				body: requestBody.body,
 				cache: event.request.cache,
 				forceCrossOriginIsolated: false,
 				initialHeaders: rawheaders,
 				rawClientUrl: client ? client.url : undefined,
 				clientId: event.clientId || event.resultingClientId,
 			},
-			event.request.body instanceof ReadableStream ||
-				// @ts-expect-error the types for fetchevent are messed up
-				event.request.body instanceof ArrayBuffer
-				? [event.request.body]
-				: undefined
+			requestBody.transfer
 		);
 
 		return new Response(response.body, {

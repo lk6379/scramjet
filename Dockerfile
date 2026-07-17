@@ -49,6 +49,15 @@ RUN pnpm --filter scramjet-docker-runtime deploy --prod --legacy /runtime
 
 FROM node:24-bookworm-slim AS runtime
 
+RUN apt-get update \
+	&& apt-get install -y --no-install-recommends \
+		ca-certificates \
+		python3 \
+		python3-pip \
+	&& python3 -m pip install --no-cache-dir --break-system-packages \
+		curl_cffi==0.15.0 \
+	&& rm -rf /var/lib/apt/lists/*
+
 ENV NODE_ENV=production
 ENV HOST=0.0.0.0
 ENV PORT=4141

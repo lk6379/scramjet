@@ -6,11 +6,13 @@ import { defaultConfigDev } from "@mercuryworkshop/scramjet";
 import { Controller } from "@mercuryworkshop/scramjet-controller";
 import { HttpCachePlugin } from "@mercuryworkshop/scramjet-utils";
 import { demoSettingsStore } from "./store";
+import { ServerFetchFallbackPlugin } from "./server-fetch-fallback";
 
 let app = document.getElementById("app")!;
 
 let controller: InstanceType<typeof Controller>;
 const cachePlugin = new HttpCachePlugin();
+const serverFetchFallbackPlugin = new ServerFetchFallbackPlugin();
 const scramjetConfig = {
 	...defaultConfigDev,
 	siteFlags: {
@@ -172,3 +174,4 @@ async function mount() {
 
 init().then(() => mount());
 export { controller, cachePlugin };
+export { serverFetchFallbackPlugin };

@@ -9,7 +9,7 @@ import {
 	UrlWatcherPlugin,
 } from "@mercuryworkshop/scramjet-utils";
 import { versionInfo } from "@mercuryworkshop/scramjet";
-import { cachePlugin, controller } from "..";
+import { cachePlugin, controller, serverFetchFallbackPlugin } from "..";
 import { demoSettingsStore } from "../store";
 import homepage from "./homepage.html?raw";
 import type { Frame } from "@mercuryworkshop/scramjet-controller";
@@ -161,7 +161,12 @@ const BrowserView: Component<
 				new URL(`/?goto=${encodeURIComponent(url.href)}`, location.origin)
 		);
 		browserState.frame = controller.createFrame(this.frameel, {
-			plugins: [cachePlugin, urlWatcher, catchEscapedLinks],
+			plugins: [
+				serverFetchFallbackPlugin,
+				cachePlugin,
+				urlWatcher,
+				catchEscapedLinks,
+			],
 		});
 		let realHomepage = homepage;
 		realHomepage = realHomepage.replaceAll(
